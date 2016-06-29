@@ -392,12 +392,29 @@ def main():
     signal.signal(signal.SIGINT, exit_signal_handler)
     signal.signal(signal.SIGTERM, exit_signal_handler)
 
+    def _zk_it():
+        if runtime.recreate:
+            runtime.create_node()
+
+        if runtime.maintenance:
+            runtime.del_node()
+            runtime.withdraw_all()
+
+        if not ServiceChecker(runtime.get_conf().local_check).check() \
+                or MaintenanceChecker(runtime.get_zk(), runtime.get_conf().zk_path_maintenance).check():
+            runtime.trigger_maintenance()
+        elif runtime.get_zk().state == KazooState.CONNECTED:
+            if runtime.maintenance:
+                runtime.cancel_maintenance()
+                runtime.trigger_recreate()
+            runtime.refresh_children()
+
     def zk_transition(state):
         logger.info('zk state changed to %s' % state)
 
-        if state == KazooState.SUSPENDED:
-            logger.error('zk disconnected, flushing routes...')
-            runtime.withdraw_all()
+        #if state == KazooState.SUSPENDED:
+        #    logger.error('zk disconnected, flushing routes...')
+        #    runtime.withdraw_all()
 
         if state == KazooState.LOST:
             logger.error('zk lost, have to re-create ephemeral node')
@@ -439,21 +456,11 @@ def main():
         if runtime.shouldstop:
             break
 
-        if runtime.recreate:
-            runtime.create_node()
-
-        if runtime.maintenance:
-            runtime.del_node()
-            runtime.withdraw_all()
-
-        if not ServiceChecker(runtime.get_conf().local_check).check() \
-                or MaintenanceChecker(runtime.get_zk(), runtime.get_conf().zk_path_maintenance).check():
-            runtime.trigger_maintenance()
-        elif runtime.get_zk().state == KazooState.CONNECTED:
-            if runtime.maintenance:
-                runtime.cancel_maintenance()
-                runtime.trigger_recreate()
-            runtime.refresh_children()
+        try:
+            runtime.get_zk().retry(_zk_it);
+        except:
+            if runtime.get_zk().state == KazooState.SUSPENDED:
+                runtime.withdraw_all()
 
         BGPSpeaker(runtime.get_bgp_table()).advertise_routes()
 
